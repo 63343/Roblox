@@ -1,84 +1,154 @@
 --[[
-    Advanced Adonis Bypass
-    Combines detection hooks, kill prevention, debug.info bypass,
-    table mutation, and client-side anti-kick protection.
-    Note: Cannot stop pure server-side kicks.
+Combined UltraBypass & Adonis Bypass
+Features: Anti-cheat detection, kick prevention, remote hooking, metatable bypass,
+humanoid analysis, and client-side protections.
+Note: Cannot stop pure server-side kicks.
 --]]
 
 --// CONFIG
-local DEBUG_MODE = false -- Set true for warnings
-local SEND_NOTIFICATIONS = true
+local DEBUG_MODE = false -- Set true for debug warnings
+local SEND_NOTIFICATIONS = true -- Enable/disable notifications
+local SCAN_INTERVAL = 5 -- Seconds between scans
 
 --// SERVICES
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 local StarterGui = game:GetService("StarterGui")
+local ServerScriptService = game:GetService("ServerScriptService")
+local StarterPlayerScripts = game:GetService("StarterPlayer").StarterPlayerScripts
+local Lighting = game:GetService("Lighting")
 
 --// STORAGE
+local player = Players.LocalPlayer
 local HookedFunctions = {}
 local DetectedFunc, KillFunc
 
---// Utility: Debug printing
+--// AntiCheat Keywords
+local antiCheatKeywords = {
+    "AntiCheat", "AC", "Security", "ClientWatcher", "ServerGuard", "CheckSys",
+    "CheckSystem", "Monitor", "Punisher", "Enforcer", "Watcher",
+    "KickPlayer", "CheckMovement", "ValidateClient", "ReportHack",
+    "Ban", "BanScript", "Block", "Filter", "RemoteBlock"
+}
+
+--// Utility: Debug Printing
 local function dbgWarn(msg)
-    if DEBUG_MODE then warn(msg) end
+    if DEBUG_MODE then warn("[Bypass Debug] " .. tostring(msg)) end
 end
 
 --// Utility: Notification
-local function notify(title, text, dur)
+local function notify(title, text, duration)
     if SEND_NOTIFICATIONS then
         pcall(function()
             StarterGui:SetCore("SendNotification", {
                 Title = title,
                 Text = text,
-                Duration = dur or 3
+                Duration = duration or 3
             })
         end)
     end
 end
 
---// Thread Identity
-pcall(function() setthreadidentity(2) end)
+--// Utility: Check if object is player-related
+local function isPlayerRelated(obj)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if obj:IsDescendantOf(plr.Character or plr) then
+            return true
+        end
+    end
+    return false
+end
 
---// Scan garbage collector for Adonis connections
-for _, obj in ipairs(getgc(true)) do
-    if typeof(obj) == "table" then
-        local detect = rawget(obj, "Detected")
-        local kill = rawget(obj, "Kill")
+--// Scan and Destroy AntiCheat Scripts/Events
+local function scanAndDestroy(parent)
+    for _, obj in ipairs(parent:GetDescendants()) do
+        if isPlayerRelated(obj) then continue end
 
-        -- Hook Detected function
-        if typeof(detect) == "function" and not DetectedFunc then
-            DetectedFunc = detect
-            local old; old = hookfunction(detect, function(action, info, noCrash)
-                if action ~= "_" then
-                    dbgWarn(`Adonis flag blocked | Method: {action} | Info: {info}`)
+        -- Check for scripts and remotes
+        if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript")
+            or obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction")
+            or obj:IsA("BindableEvent") or obj:IsA("BindableFunction") then
+            for _, key in ipairs(antiCheatKeywords) do
+                if obj.Name:lower():find(key:lower()) then
+                    notify("AntiCheat Detected", "Destroying: " .. obj:GetFullName(), 3)
+                    obj:Destroy()
+                    break
                 end
-                return true
-            end)
-            table.insert(HookedFunctions, DetectedFunc)
-        end
-
-        -- Hook Kill function
-        if rawget(obj, "Variables") and rawget(obj, "Process") and typeof(kill) == "function" and not KillFunc then
-            KillFunc = kill
-            local old; old = hookfunction(kill, function(info)
-                dbgWarn(`Adonis kill attempt blocked | Info: {info}`)
-            end)
-            table.insert(HookedFunctions, KillFunc)
-        end
-
-        -- Attempt table mutation bypass
-        local indexInstance = rawget(obj, "indexInstance")
-        if typeof(indexInstance) == "table" and indexInstance[1] == "kick" then
-            setreadonly(obj, false)
-            setreadonly(indexInstance, false)
-            rawset(obj, "Table", {"kick", function() coroutine.yield() end})
-            dbgWarn("Mutated indexInstance to block kick communication")
+            end
+        -- Check for invisible/collision-disabled parts or models
+        elseif obj:IsA("BasePart") and obj.Transparency >= 1 and not obj.CanCollide then
+            obj:Destroy()
+        elseif obj:IsA("Model") then
+            local visible = false
+            for _, part in ipairs(obj:GetDescendants()) do
+                if part:IsA("BasePart") and part.Transparency < 1 then
+                    visible = true
+                    break
+                end
+            end
+            if not visible then
+                obj:Destroy()
+            end
         end
     end
 end
 
---// Hook debug.info sanity check
-do
-    local old; old = hookfunction(getrenv().debug.info, newcclosure(function(...)
+--// Analyze Humanoids and Kick Suspicious Players
+local function analyzeHumanoidsAndKick()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local char = plr.Character
+        if char and char:FindFirstChild("Humanoid") then
+            local humanoid = char.Humanoid
+            local rootPart = char:FindFirstChild("HumanoidRootPart")
+
+            if humanoid.PlatformStand then
+                notify("Exploit Detected", plr.Name .. ": Fly detected. Kicking.", 3)
+                plr:Kick("Fly protection triggered!")
+            elseif humanoid:GetState() == Enum.HumanoidStateType.Freefall and rootPart then
+                local rayOrigin = rootPart.Position
+                local rayDirection = Vector3.new(0, -10, 0)
+                local rayParams = RaycastParams.new()
+                rayParams.FilterDescendantsInstances = {char}
+                rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+                if not Workspace:Raycast(rayOrigin, rayDirection, rayParams) then
+                    notify("Exploit Detected", plr.Name .. ": Floating detected. Kicking.", 3)
+                    plr:Kick("Fly protection triggered!")
+                end
+            elseif humanoid.WalkSpeed > 20 then
+                notify("Exploit Detected", plr.Name .. ": Speed hack detected. Kicking.", 3)
+                plr:Kick("Speed hack detected!")
+            end
+        end
+    end
+end
+
+--// Hook Metatable for Humanoid Protection
+local function hookMetatable()
+    local mt = getrawmetatable(game)
+    local old_index = mt.__index
+    local old_newindex = mt.__newindex
+
+    setreadonly(mt, false)
+    mt.__index = newcclosure(function(self, key)
+        if tostring(self) == "Humanoid" and key == "WalkSpeed" then
+            return 16 -- Return normal speed to hide modifications
+        end
+        return old_index(self, key)
+    end)
+    mt.__newindex = newcclosure(function(self, key, value)
+        if tostring(self) == "Humanoid" and key == "WalkSpeed" and value > 20 then
+            value = 16 -- Enforce normal speed
+        end
+        return old_newindex(self, key, value)
+    end)
+    setreadonly(mt, true)
+    notify("Metatable Hook", "Humanoid protection active.", 3)
+end
+
+--// Hook debug.info for Adonis Sanity Check Bypass
+local function hookDebugInfo()
+    local old = hookfunction(getrenv().debug.info, newcclosure(function(...)
         local a, b = ...
         if DetectedFunc and a == DetectedFunc then
             dbgWarn("Blocked Adonis debug.info sanity check")
@@ -88,19 +158,111 @@ do
     end))
 end
 
---// Anti-Kick (__namecall hook)
-do
-    local old; old = hookmetamethod(game, "__namecall", function(self, ...)
-        local method = getnamecallmethod()
-        if typeof(method) == "string" and method:lower() == "kick" then
-            notify("Anti-Kick", "Kick attempt blocked", 3)
-            return nil
+--// Anti-Kick Protection
+local function disableKick()
+    local mt = getrawmetatable(player)
+    local old_namecall = mt.__namecall
+
+    setreadonly(mt, false)
+    mt.__namecall = newcclosure(function(self, ...)
+        if self == player and getnamecallmethod() == "Kick" then
+            notify("Anti-Kick", "Kick attempt blocked.", 3)
+            return
         end
-        return old(self, ...)
+        return old_namecall(self, ...)
     end)
+    setreadonly(mt, true)
 end
 
---// Finalize
-pcall(function() setthreadidentity(7) end)
-notify("Adonis Bypass", "Script loaded successfully", 4)
-dbgWarn(`Hooked {#HookedFunctions} Adonis functions`)
+--// Hook RemoteEvents and RemoteFunctions
+local function hookRemotes()
+    for _, remote in ipairs(ReplicatedStorage:GetDescendants()) do
+        if remote:IsA("RemoteEvent") or remote:IsA("RemoteFunction") then
+            local oldFireServer = remote.FireServer
+            remote.FireServer = function(self, ...)
+                -- Optional: Add filtering logic here
+                return oldFireServer(self, ...)
+            end
+        end
+    end
+    notify("Remote Hook", "Remote protection active.", 3)
+end
+
+--// Adonis Detection and Kill Function Hooks
+local function hookAdonisFunctions()
+    for _, obj in ipairs(getgc(true)) do
+        if typeof(obj) == "table" then
+            local detect = rawget(obj, "Detected")
+            local kill = rawget(obj, "Kill")
+
+            -- Hook Detected function
+            if typeof(detect) == "function" and not DetectedFunc then
+                DetectedFunc = detect
+                local old = hookfunction(detect, function(action, info, noCrash)
+                    if action ~= "_" then
+                        dbgWarn("Adonis flag blocked | Method: " .. tostring(action) .. " | Info: " .. tostring(info))
+                    end
+                    return true
+                end)
+                table.insert(HookedFunctions, DetectedFunc)
+            end
+
+            -- Hook Kill function
+            if rawget(obj, "Variables") and rawget(obj, "Process") and typeof(kill) == "function" and not KillFunc then
+                KillFunc = kill
+                local old = hookfunction(kill, function(info)
+                    dbgWarn("Adonis kill attempt blocked | Info: " .. tostring(info))
+                end)
+                table.insert(HookedFunctions, KillFunc)
+            end
+
+            -- Mutate indexInstance to block kick communication
+            local indexInstance = rawget(obj, "indexInstance")
+            if typeof(indexInstance) == "table" and indexInstance[1] == "kick" then
+                setreadonly(obj, false)
+                setreadonly(indexInstance, false)
+                rawset(obj, "Table", {"kick", function() coroutine.yield() end})
+                dbgWarn("Mutated indexInstance to block kick communication")
+            end
+        end
+    end
+end
+
+--// Main Scan and Cleaning
+local function runFullScan()
+    notify("Bypass System", "Starting full scan...", 3)
+    scanAndDestroy(Workspace)
+    scanAndDestroy(ReplicatedStorage)
+    scanAndDestroy(ServerScriptService)
+    scanAndDestroy(StarterPlayerScripts)
+    scanAndDestroy(Lighting)
+    scanAndDestroy(player:WaitForChild("PlayerGui"))
+    analyzeHumanoidsAndKick()
+    notify("Bypass System", "Scan and cleaning completed ✓", 3)
+end
+
+--// Periodic Scanning
+local function startPeriodicScan()
+    while true do
+        runFullScan()
+        task.wait(SCAN_INTERVAL)
+    end
+end
+
+--// Initialize
+local function initialize()
+    pcall(setthreadidentity, 2)
+    hookMetatable()
+    hookDebugInfo()
+    disableKick()
+    hookRemotes()
+    hookAdonisFunctions()
+    runFullScan()
+    task.spawn(startPeriodicScan) -- Start periodic scanning
+    pcall(setthreadidentity, 7)
+end
+
+--// Run Initialization
+initialize()
+notify("Bypass System", "Script loaded successfully!", 4)
+dbgWarn("Hooked " .. #HookedFunctions .. " Adonis functions")
